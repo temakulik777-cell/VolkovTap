@@ -1,0 +1,96 @@
+name: Build TIPA
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          export THEOS=~/theos
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          echo "$THEOS/bin" >> $GITHUB_PATH
+
+      - name: Install Dependencies
+        run: |
+          brew install ldid xz
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
+          rsync -av --ignore-errors /tmp/sdks/ ~/theos/sdks/ || true
+
+      - name: Fix SDK Path
+        run: |
+          set +e
+          AVAILABLE_SDK=$(ls ~/theos/sdks | grep iPhoneOS | head -n 1)
+          echo "Доступен SDK: $AVAILABLE_SDK"
+          if [ "$AVAILABLE_SDK" != "iPhoneOS16.5.sdk" ]; then
+            ln -s ~/theos/sdks/$AVAILABLE_SDK ~/theos/sdks/iPhoneOS16.5.sdk
+          fi
+
+      - name: Unzip Sources
+        run: |
+          set +e
+          echo "=== Файлы в корне репозитория ==="
+          ls -la
+
+          echo ""
+          echo "=== Все ZIP-файлы ==="
+          find . -name "*.zip" -not -path "./.theos/*"
+
+          echo ""
+          echo "=== Распаковка ==="
+          for f in *.zip; do
+            if [ -f "$f" ]; then
+              echo "Распаковываю: $f"
+              unzip -o "$f" -d ./unpacked
+            fi
+          done
+
+          echo ""
+          echo "=== Что получилось после распаковки ==="
+          ls -la ./unpacked/ 2>/dev/null || echo "Папка unpacked пустая или не создана"
+
+          echo ""
+          echo "=== Поиск Makefile ВЕЗДЕ ==="
+          find . -name "Makefile" 2>/dev/null || echo "Makefile НЕ НАЙДЕН"
+
+          echo ""
+          echo "=== Поиск .m/.mm файлов ==="
+          find . -name "*.m" -o -name "*.mm" 2>/dev/null | head -20
+
+      - name: Fix THEOS Path in Makefile
+        run: |
+          set +e
+          MAKEFILE_PATH=$(find . -name "Makefile" -not -path "./.theos/*" 2>/dev/null | head -n 1)
+          echo "Найден Makefile: $MAKEFILE_PATH"
+          if [ -n "$MAKEFILE_PATH" ]; then
+            echo "Правлю Makefile: $MAKEFILE_PATH"
+            sed -i '' 's|export THEOS=/var/mobile/theos|export THEOS=~/theos|' "$MAKEFILE_PATH"
+            echo "=== Первые 5 строк Makefile ==="
+            head -5 "$MAKEFILE_PATH"
+          fi
+
+      - name: Build TIPA
+        run: |
+          set +e
+          MAKEFILE_PATH=$(find . -name "Makefile" -not -path "./.theos/*" 2>/dev/null | head -n 1)
+          echo "Найден Makefile: $MAKEFILE_PATH"
+          if [ -z "$MAKEFILE_PATH" ]; then
+            echo "ОШИБКА: Makefile не найден!"
+            echo "Вот что лежит в корне:"
+            ls -la
+            exit 1
+          fi
+          MAKEFILE_DIR=$(dirname "$MAKEFILE_PATH")
+          echo "Перехожу в: $MAKEFILE_DIR"
+          cd "$MAKEFILE_DIR"
+          ls -la
+          make package FINALPACKAGE=1 THEOS=~/theos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VolkovTap-tipa
+          path: |
+            **/packages/*.tipa
+            **/*.tipa
