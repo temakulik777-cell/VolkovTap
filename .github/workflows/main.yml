@@ -1,0 +1,99 @@
+name: Build TIPA
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          export THEOS=~/theos
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          echo "$THEOS/bin" >> $GITHUB_PATH
+
+      - name: Install Dependencies
+        run: |
+          brew install ldid xz
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
+          rsync -av --ignore-errors /tmp/sdks/ ~/theos/sdks/ || true
+
+      - name: Fix SDK Path
+        run: |
+          set +e
+          AVAILABLE_SDK=$(ls ~/theos/sdks | grep iPhoneOS | head -n 1)
+          echo "Доступен SDK: $AVAILABLE_SDK"
+          if [ "$AVAILABLE_SDK" != "iPhoneOS16.5.sdk" ]; then
+            ln -s ~/theos/sdks/$AVAILABLE_SDK ~/theos/sdks/iPhoneOS16.5.sdk
+          fi
+
+      - name: Unzip Sources
+        run: |
+          set +e
+          echo "=== Распаковка ZIP ==="
+          find . -maxdepth 1 -name "*.zip" -print0 | while IFS= read -r -d '' f; do
+            echo "Распаковываю: $f"
+            unzip -o "$f" -d ./unpacked
+          done
+
+          echo ""
+          echo "=== Поиск makefile (любой регистр) ==="
+          find . -iname "makefile" -not -path "./.theos/*"
+          echo ""
+          echo "=== Структура unpacked ==="
+          find ./unpacked -type f | head -50
+
+      - name: Fix Paths and Structure
+        run: |
+          set +e
+          # Ищем Makefile в ЛЮБОМ регистре
+          MAKEFILE_PATH=$(find . -iname "makefile" -not -path "./.theos/*" 2>/dev/null | head -n 1)
+          echo "Найден Makefile: $MAKEFILE_PATH"
+          if [ -z "$MAKEFILE_PATH" ]; then
+            echo "ОШИБКА: Makefile не найден!"
+            exit 1
+          fi
+
+          # Правим путь к Theos
+          sed -i '' 's|export THEOS=/var/mobile/theos|export THEOS=~/theos|' "$MAKEFILE_PATH"
+
+          # Корень проекта
+          PROJECT_DIR=$(dirname "$MAKEFILE_PATH")
+          echo "Корень проекта: $PROJECT_DIR"
+          cd "$PROJECT_DIR"
+          ls -la
+
+          # Создаём папки, которые ищет код
+          mkdir -p unity_api
+          mkdir -p helpers
+          mkdir -p drawing_view
+
+          # Копируем все .h отовсюду
+          cp sources/*.h unity_api/ 2>/dev/null
+          cp sources/*.h helpers/ 2>/dev/null
+          cp sources/*.h drawing_view/ 2>/dev/null
+          cp *.h unity_api/ 2>/dev/null
+          cp *.h helpers/ 2>/dev/null
+          cp *.h drawing_view/ 2>/dev/null
+
+          echo "=== unity_api/ ==="
+          ls unity_api/ || true
+          echo "=== helpers/ ==="
+          ls helpers/ || true
+
+      - name: Build TIPA
+        run: |
+          set +e
+          MAKEFILE_PATH=$(find . -iname "makefile" -not -path "./.theos/*" 2>/dev/null | head -n 1)
+          MAKEFILE_DIR=$(dirname "$MAKEFILE_PATH")
+          echo "Собираю в: $MAKEFILE_DIR"
+          cd "$MAKEFILE_DIR"
+          make package FINALPACKAGE=1 THEOS=~/theos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VolkovTap-tipa
+          path: |
+            **/packages/*.tipa
+            **/*.tipa
